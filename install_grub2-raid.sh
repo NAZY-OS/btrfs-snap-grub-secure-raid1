@@ -1,16 +1,18 @@
 #!/bin/bash
 
 # Script Name: install_grub2-raid.sh
-# Version: 1.2-ALPHA
+# Version: 1.3-ALPHA
 # Author: [NAZY-OS]
 # License: GPL-2.0
-#!/bin/bash
+
 
 # Function to show help
 show_help() {
-    echo "Usage: $0 <disk1> <disk2> [<disk3> ... <diskN>] [--update-boot | -u]"
-    echo "Example: $0 /dev/sda /dev/sdb /dev/sdc"
+    echo "Usage: $0 <disk1> <disk2> [<disk3> ... <diskN>] [--update-boot | -u] [--lock | --unlock]"
+    echo "Example: $0 /dev/sda /dev/sdb"
     echo "         $0 /dev/sda /dev/sdb --update-boot or -u"
+    echo "         $0 /dev/sda /dev/sdb --lock"
+    echo "         $0 /dev/sda /dev/sdb --unlock"
     echo "The script installs GRUB and creates Btrfs snapshots."
 }
 
@@ -20,12 +22,28 @@ if [ "$#" -lt 2 ]; then
     exit 1
 fi
 
-DISKS=("${@:1:$#-1}")  # Grab all disks except the last parameter
+DISKS=("${@:1:$#-2}")  # Grab all disks except the last two parameters
 UPDATE_BOOT=false
+LOCK=false
 
-# Check if the update parameter has been provided
-if [[ "${!#}" == "--update-boot" || "${!#}" == "-u" ]]; then
-    UPDATE_BOOT=true
+# Check for update and lock/unlock parameters
+for (( i=${#DISKS[@]}; i<=$#; i++ )); do
+    case "${!i}" in
+        --update-boot|-u)
+            UPDATE_BOOT=true
+            ;;
+        --lock)
+            LOCK=true
+            ;;
+        --unlock)
+            LOCK=false
+            ;;
+    esac
+done
+
+if [ "$LOCK" = true ]; then
+    echo "The script is in lock mode. No modifications will be made."
+    exit 0
 fi
 
 # Format the Btrfs file system with RAID 1
@@ -36,20 +54,29 @@ sudo mkfs.btrfs -d raid1 -m raid1 "${DISKS[@]}"
 echo "Mounting the Btrfs file system"
 sudo mount "${DISKS[0]}" /mnt
 
+# Check the total available size for the subvolume
+TOTAL_SIZE=$(sudo btrfs filesystem df /mnt | grep 'Data' | awk '{print $2}' | sed 's/[A-Za-z]//g')
+MAX_SIZE=3096  # Maximum size in MB
+
+if [ "$TOTAL_SIZE" -gt "$MAX_SIZE" ]; then
+    echo "Total available size exceeds maximum limit of ${MAX_SIZE} MB for the Btrfs volume."
+    exit 1
+fi
+
 # Create the subvolumes
 sudo btrfs subvolume create /mnt/@          # Root subvolume
 sudo btrfs subvolume create /mnt/@boot      # Boot subvolume
 sudo umount /mnt
 
 # Mount the subvolumes
-sudo mount -o subvol=@ "${DISKS[0]}" /mnt       # Mount root subvolume
+sudo mount -o subvol=@,ro "${DISKS[0]}" /mnt       # Mount root subvolume as read-only
 sudo mkdir -p /mnt/boot
-sudo mount -o subvol=@boot "${DISKS[0]}" /mnt/boot  # Mount boot subvolume
+sudo mount -o subvol=@boot,ro "${DISKS[0]}" /mnt/boot  # Mount boot subvolume as read-only
 
 # Install GRUB on all specified disks
 for DISK in "${DISKS[@]}"; do
     echo "Installing GRUB on $DISK"
-    sudo grub-install --target=i386-pc --debug "$DISK"
+    sudo grub-install --target=i386-pc "$DISK"
 done
 
 # Generate GRUB configuration in the custom file
@@ -59,7 +86,7 @@ set default=0
 set timeout=5
 
 menuentry "Linux" {
-    linux /vmlinuz root=/dev/sda1 rootflags=subvol=@ rw
+    linux /vmlinuz root=/dev/sda1 rootflags=subvol=@,ro rw
     initrd /initrd.img
 }
 EOF
@@ -76,7 +103,7 @@ sudo btrfs subvolume snapshot /mnt/@ /mnt/@/.snapshots/root_$(date +%Y%m%d_%H%M%
 echo "Creating read-only version of the boot subvolume"
 sudo btrfs subvolume snapshot /mnt/@boot /mnt/@boot/.snapshots/boot_$(date +%Y%m%d_%H%M%S)
 sudo umount /mnt/boot
-sudo mount -o subvol=@boot,ro "${DISKS[0]}" /mnt/boot  # Mount in read-only mode
+sudo mount -o subvol=@boot,ro "${DISKS[0]}" /mnt/boot  # Remount in read-only mode
 
 # If the update boot flag is set
 if [ "$UPDATE_BOOT" = true ]; then
@@ -98,3 +125,5 @@ else
     echo "Error during GRUB installation."
     exit 1
 fi
+
+
