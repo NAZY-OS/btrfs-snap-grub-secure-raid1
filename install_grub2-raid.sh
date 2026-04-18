@@ -1,14 +1,15 @@
 #!/bin/bash
 
 # Script Name: install_grub2-raid.sh
-# Version: 1.1-ALPHA
+# Version: 1.2-ALPHA
 # Author: [NAZY-OS]
 # License: GPL-2.0
+#!/bin/bash
 
 # Function to show help
 show_help() {
-    echo "Usage: $0 <disk1> <disk2> [--update-boot | -u]"
-    echo "Example: $0 /dev/sda /dev/sdb"
+    echo "Usage: $0 <disk1> <disk2> [<disk3> ... <diskN>] [--update-boot | -u]"
+    echo "Example: $0 /dev/sda /dev/sdb /dev/sdc"
     echo "         $0 /dev/sda /dev/sdb --update-boot or -u"
     echo "The script installs GRUB and creates Btrfs snapshots."
 }
@@ -19,22 +20,21 @@ if [ "$#" -lt 2 ]; then
     exit 1
 fi
 
-DISK1=$1
-DISK2=$2
+DISKS=("${@:1:$#-1}")  # Grab all disks except the last parameter
 UPDATE_BOOT=false
 
 # Check if the update parameter has been provided
-if [[ "$3" == "--update-boot" || "$3" == "-u" ]]; then
+if [[ "${!#}" == "--update-boot" || "${!#}" == "-u" ]]; then
     UPDATE_BOOT=true
 fi
 
 # Format the Btrfs file system with RAID 1
 echo "Formatting the Btrfs file system in RAID 1"
-sudo mkfs.btrfs -d raid1 -m raid1 "$DISK1" "$DISK2"
+sudo mkfs.btrfs -d raid1 -m raid1 "${DISKS[@]}"
 
 # Mount the Btrfs file system
 echo "Mounting the Btrfs file system"
-sudo mount "$DISK1" /mnt
+sudo mount "${DISKS[0]}" /mnt
 
 # Create the subvolumes
 sudo btrfs subvolume create /mnt/@          # Root subvolume
@@ -42,14 +42,15 @@ sudo btrfs subvolume create /mnt/@boot      # Boot subvolume
 sudo umount /mnt
 
 # Mount the subvolumes
-sudo mount -o subvol=@ "$DISK1" /mnt       # Mount root subvolume
+sudo mount -o subvol=@ "${DISKS[0]}" /mnt       # Mount root subvolume
 sudo mkdir -p /mnt/boot
-sudo mount -o subvol=@boot "$DISK1" /mnt/boot  # Mount boot subvolume
+sudo mount -o subvol=@boot "${DISKS[0]}" /mnt/boot  # Mount boot subvolume
 
-# Install GRUB
-echo "Installing GRUB on $DISK1 and $DISK2"
-sudo grub-install --target=i386-pc --debug "$DISK1"
-sudo grub-install --target=i386-pc --debug "$DISK2"
+# Install GRUB on all specified disks
+for DISK in "${DISKS[@]}"; do
+    echo "Installing GRUB on $DISK"
+    sudo grub-install --target=i386-pc --debug "$DISK"
+done
 
 # Generate GRUB configuration in the custom file
 echo "Adding custom entry to GRUB configuration"
@@ -75,7 +76,7 @@ sudo btrfs subvolume snapshot /mnt/@ /mnt/@/.snapshots/root_$(date +%Y%m%d_%H%M%
 echo "Creating read-only version of the boot subvolume"
 sudo btrfs subvolume snapshot /mnt/@boot /mnt/@boot/.snapshots/boot_$(date +%Y%m%d_%H%M%S)
 sudo umount /mnt/boot
-sudo mount -o subvol=@boot,ro "$DISK1" /mnt/boot  # Mount in read-only mode
+sudo mount -o subvol=@boot,ro "${DISKS[0]}" /mnt/boot  # Mount in read-only mode
 
 # If the update boot flag is set
 if [ "$UPDATE_BOOT" = true ]; then
@@ -83,7 +84,7 @@ if [ "$UPDATE_BOOT" = true ]; then
     
     # Remount the root subvolume as rw and update the snapshots
     sudo umount /mnt
-    sudo mount -o remount,rw "$DISK1" /mnt       # Remount root subvolume as rw
+    sudo mount -o remount,rw "${DISKS[0]}" /mnt       # Remount root subvolume as rw
     
     # Update snapshots
     sudo btrfs subvolume snapshot /mnt/@ /mnt/@/.snapshots/root_updated_$(date +%Y%m%d_%H%M%S)
@@ -92,7 +93,7 @@ if [ "$UPDATE_BOOT" = true ]; then
 fi
 
 if [ $? -eq 0 ]; then
-    echo "GRUB successfully installed on $DISK1 and $DISK2, snapshots created, and boot subvolume established."
+    echo "GRUB successfully installed on ${DISKS[*]}, snapshots created, and boot subvolume established."
 else
     echo "Error during GRUB installation."
     exit 1
