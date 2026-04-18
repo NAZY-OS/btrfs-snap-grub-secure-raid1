@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Script Name: install_grub2-raid.sh
-# Version: v1.2-BETA
+# Version: v1.3-BETA
 # Author: [NAZY-OS]
 # License: GPL-2.0
 
@@ -156,9 +156,15 @@ for DISK in "${DISKS[@]}"; do
     sudo grub-install --target=i386-pc "$DISK"
 done
 
-# Generate GRUB configuration
-echo "Adding custom entry to GRUB configuration"
-cat <<EOF | sudo tee /etc/grub.d/40_custom
+# Load current GRUB configuration
+if [ -f /boot/grub/grub.cfg ]; then
+    CURRENT_GRUB_CFG=$(cat /boot/grub/grub.cfg)
+else
+    CURRENT_GRUB_CFG=""
+fi
+
+# Add new entries to GRUB configuration
+NEW_GRUB_ENTRIES=$(cat <<EOF
 set default=0
 set timeout=5
 
@@ -182,10 +188,16 @@ menuentry "Show Checksum Test" {
     btrfs scrub status /mnt/@
 }
 EOF
+)
 
 # Generate the final GRUB configuration
 echo "Generating GRUB configuration"
-sudo grub-mkconfig -o /mnt/boot/grub/grub.cfg
+{
+    if [ -n "$CURRENT_GRUB_CFG" ]; then
+        echo "$CURRENT_GRUB_CFG"
+    fi
+    echo "$NEW_GRUB_ENTRIES"
+} | sudo tee /mnt/boot/grub/grub.cfg
 
 # Create .SECURE_RAID.lst file
 create_secure_raid_list
