@@ -1,0 +1,43 @@
+#!/bin/bash
+set -euo pipefail
+LOCK=/var/lock/install_grub2-raid.lock
+FORCE=false
+
+show_help(){ cat<<EOF
+Usage: $0 [-i|-u] [-f] [-l|-U] <disk1> <disk2>...
+ -i init  -u update-boot  -l lock  -U unlock  -f force
+EOF
+}
+
+require_root(){ [[ $EUID -eq 0 ]]||{ echo "root nötig";exit 1; } }
+
+lock(){ [[ -e $LOCK ]]&&{ echo "locked";exit 1; }; echo "$(whoami) $(date)" >$LOCK;chmod 600 $LOCK;echo "locked"; }
+unlock(){ [[ -e $LOCK ]]&&rm -f $LOCK && echo "unlocked" || echo "not locked"; }
+
+is_locked(){ [[ -e $LOCK ]]; }
+
+init(){ require_root; is_locked && [[ $FORCE != true ]] && { echo "locked"; exit 1; }; echo "init ${DISKS[*]}"; }
+update_boot(){ require_root; is_locked && [[ $FORCE != true ]] && { echo "locked"; exit 1; }; echo "update-boot ${DISKS[*]}"; }
+
+ACTION=""
+ARGS=()
+while (( "$#" )); do
+ case $1 in
+  -h|--help) show_help; exit;;
+  -i) ACTION=init;;
+  -u) ACTION=update_boot;;
+  -l) lock; exit;;
+  -U) unlock; exit;;
+  -f) FORCE=true;;
+  --) shift; while (( "$#" )); do ARGS+=("$1"); shift; done; break;;
+  -*) echo "Unknown $1"; show_help; exit 1;;
+  *) ARGS+=("$1");;
+ esac
+ shift
+done
+
+if [[ -z $ACTION ]]; then show_help; exit 1; fi
+if (( ${#ARGS[@]} < 2 )); then echo "min. 2 disks"; exit 1; fi
+DISKS=("${ARGS[@]}")
+
+$ACTION
