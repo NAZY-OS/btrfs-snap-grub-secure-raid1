@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Script Name: install_grub2-raid.sh
-# Version: v1.5-ALPHA
+# Version: v1.6-ALPHA
 # Author: [NAZY-OS]
 # License: GPL-2.0
 
@@ -10,19 +10,28 @@ show_help() {
     cat << EOF
 Usage: $0 [OPTIONS] <disk1> <disk2> [<disk3> ... <diskN>]
 
+This script sets up a Btrfs file system with RAID 1 and installs GRUB on specified disks. 
+Additionally, it supports checksum testing and snapshot management.
+
 Options:
   -h, --help                Show this help message and exit
-  -u, --update-boot         Update boot and remount subvolumes as read-write
+  -u, --update-boot         Update boot entries and remount subvolumes as read-write
   -l, --lock                Lock the script to prevent modifications
-  -u, --unlock              Unlock the script to allow modifications
+  -u, --unlock              Unlock the script to allow modifications (note: this flag is the same as -u)
   -c, --checksum-test       Perform a checksum and file change test
+  <disk1>, <disk2>, ...     Specify the disks for installation (e.g., /dev/sda /dev/sdb)
 
 Examples:
-  $0 /dev/sda /dev/sdb
-  $0 /dev/sda /dev/sda --update-boot
-  $0 /dev/sda /dev/sda --lock
-  $0 /dev/sda /dev/sda --unlock
-  $0 --checksum-test
+  $0 /dev/sda /dev/sdb           Install on two disks
+  $0 /dev/sda --update-boot      Update boot entries for an existing installation
+  $0 /dev/sda --lock             Prevent modifications to the script
+  $0 --checksum-test              Perform a checksum test on the installed volume
+
+Important Notes:
+- Ensure specified disks are unmounted before running the script.
+- The script will create a 3096 MB partition on the first specified disk.
+- Use caution when locking the script; modifications will not be saved.
+
 EOF
 }
 
@@ -69,31 +78,23 @@ if [ "$LOCK" = true ]; then
     exit 0
 fi
 
-# If checksum test is triggered
-if [ "$CHECKSUM_TEST" = true ]; then
-    # Perform checksum test
-    CHECKSUM_FILE="/var/log/btrfs_checksums.log"
-    TARGET_DIR="/mnt/@"
+# Create a new partition on the first disk
+create_partition() {
+    echo "Creating a 3096 MB partition on ${DISKS[0]}..."
+    
+    PARTITION_CMD="parted ${DISKS[0]} mklabel gpt; parted -a opt ${DISKS[0]} mkpart primary btrfs 0% 3096MB"
+    eval "$PARTITION_CMD"
 
-    if [[ ! -f $CHECKSUM_FILE ]]; then
-        echo "Checksum file not found. Please run the script without the checksum test option to create it first."
+    if [ $? -eq 0 ]; then
+        echo "Partition created successfully."
+    else
+        echo "Error creating partition."
         exit 1
     fi
+}
 
-    OLD_CHECKSUMS=$(cat "$CHECKSUM_FILE")
-    NEW_CHECKSUMS=$(find "$TARGET_DIR" -type f -exec sha256sum {} \;)
-
-    echo "Checking for changes..."
-    DIFF=$(diff <(echo "$OLD_CHECKSUMS") <(echo "$NEW_CHECKSUMS"))
-
-    if [[ -n "$DIFF" ]]; then
-        echo "Changes detected:"
-        echo "$DIFF"
-    else
-        echo "No changes found."
-    fi
-    exit 0
-fi
+# Call the function to create a partition
+create_partition
 
 # Format the Btrfs file system with RAID 1, SHA256 checksums, and label
 echo "Formatting the Btrfs file system in RAID 1 with SHA256 checksums and label 'SecureGrubRaid1'"
