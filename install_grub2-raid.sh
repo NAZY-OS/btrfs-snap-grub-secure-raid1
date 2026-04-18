@@ -1,6 +1,289 @@
 #!/bin/bash
 
 # Script Name: install_grub2-raid.sh
+# Version: v1.4-BETA
+# Author: [NAZY-OS]
+# License: GPL-2.0
+
+# Function to show help message
+show_help() {
+    cat << EOF
+Usage: $0 [OPTIONS] <disk1> <disk2> [<disk3> ... <diskN>]
+
+Options:
+  -h, --help                Show this help message and exit
+  -i, --init                Initialize the setup (format disks, create subvolumes)
+  -u, --update-boot         Update boot and remount subvolumes as read-write
+  -l, --lock                Lock the script to prevent modifications
+  -u, --unlock              Unlock the script to allow modifications
+  -c, --checksum-test       Perform a checksum and file change test
+
+Note: A minimum of 2 disks is required. 
+
+3 disks recommended for optimal performance and security.
+The total size of each disk should be between 3096 and 4096 MB.
+
+Examples:
+  $0 /dev/sda /dev/sdb
+  $0 /dev/sda /dev/sdb /dev/sdc --update-boot
+EOF
+}
+
+# Check if the script is running as root
+if [[ "$EUID" -ne 0 ]]; then
+    echo "Please run as root"
+    exit 1
+fi
+
+# Function to check if grub-install exists
+check_grub_install() {
+    if ! command -v grub2-install &> /dev/null; then
+        echo "grub2-install could not be found. Please install GRUB."
+        exit 1
+    fi
+}
+
+# Function to create the .SECURE_RAID.lst file
+create_secure_raid_list() {
+    echo "Creating .SECURE_RAID.lst with UUIDs of boot disks."
+    UUID_LIST=""
+
+    for DISK in "${DISKS[@]}"; do
+        UUID=$(blkid -s UUID -o value "$DISK")
+        UUID_LIST+="$UUID "
+    done
+
+    echo $UUID_LIST > /mnt/.SECURE_RAID.lst
+}
+
+# Function to handle existing GRUB files
+handle_existing_grub() {
+    if [ -f /boot/grub/grub.cfg ]; then
+        echo "Existing GRUB configuration found. Creating a backup in /tmp."
+        cp /boot/grub/grub.cfg /tmp/grub.cfg.bak
+
+        read -p "Do you want to restore the previous GRUB configuration? (y/n): " choice
+        if [[ "$choice" == "y" ]]; then
+            cp /tmp/grub.cfg.bak /boot/grub/grub.cfg
+            echo "Previous GRUB configuration restored."
+        fi
+    fi
+}
+
+# Check the number of parameters
+if [ "$#" -lt 2 ] && [[ "$1" != "--checksum-test" && "$1" != "-c" ]]; then
+    show_help
+    exit 1
+fi
+
+DISKS=()
+UPDATE_BOOT=false
+LOCK=false
+CHECKSUM_TEST=false
+INIT=false
+
+# Parse command-line parameters
+while (( "$#" )); do
+    case "$1" in
+        --init|-i)
+            INIT=true
+            shift
+            ;;
+        --update-boot|-u)
+            UPDATE_BOOT=true
+            shift
+            ;;
+        --lock|-l)
+            LOCK=true
+            shift
+            ;;
+        --unlock|-u)
+            LOCK=false
+            shift
+            ;;
+        --checksum-test|-c)
+            CHECKSUM_TEST=true
+            shift
+            ;;
+        *)
+            DISKS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+if [ "$LOCK" = true ]; then
+    echo "The script is in lock mode. No modifications will be made."
+    exit 0
+fi
+
+if [ "$CHECKSUM_TEST" = true ]; then
+    # Checksum verification process
+    CHECKSUM_FILE="/var/log/btrfs_checksums.log"
+    TARGET_DIR="/mnt/@"
+
+    if [[ ! -f $CHECKSUM_FILE ]]; then
+        echo "Checksum file not found. Please run the script without the checksum test option to create it first."
+        exit 1
+    fi
+
+    OLD_CHECKSUMS=$(cat "$CHECKSUM_FILE")
+    NEW_CHECKSUMS=$(find "$TARGET_DIR" -type f -exec sha256sum {} \;)
+
+    echo "Checking for changes..."
+    DIFF=$(diff <(echo "$OLD_CHECKSUMS") <(echo "$NEW_CHECKSUMS"))
+
+    if [[ -n "$DIFF" ]]; then
+        echo "Changes detected:"
+        echo "$DIFF"
+    else
+        echo "No changes found."
+    fi
+    exit 0
+fi
+
+# Check for sufficient disk space
+if [ "${#DISKS[@]}" -lt 2 ]; then
+    echo "At least 2 disks are required."
+    exit 1
+fi
+
+for DISK in "${DISKS[@]}"; do
+    SIZE=$(fdisk -l "$DISK" | grep 'Disk' | awk '{print $3}')
+    
+    if [ "$SIZE" -lt 3096 ] || [ "$SIZE" -gt 4096 ]; then
+        echo "Disk $DISK size must be between 3096 and 4096 MB."
+        exit 1
+    fi
+done
+
+# Format the Btrfs file system with RAID 1, SHA256 checksums, and label
+echo "Formatting the Btrfs file system in RAID 1 with SHA256 checksums and label 'SecureGrubRaid1'"
+mkfs.btrfs -d raid1 -m raid1 --label "SecureGrubRaid1" --checksum sha256 --force "${DISKS[@]}"
+
+# Mount the Btrfs file system
+echo "Mounting the Btrfs file system"
+mount "${DISKS[0]}" /mnt
+
+# Initialize subvolumes if the --init option is specified
+if [ "$INIT" = true ]; then
+    # Create the subvolumes
+    btrfs subvolume create /mnt/@          # Root subvolume
+    btrfs subvolume create /mnt/@boot      # Boot subvolume
+    umount /mnt
+
+    # Mount the subvolumes with read-only option
+    mount -o subvol=@,ro "${DISKS[0]}" /mnt        # Mount root subvolume as read-only
+    mkdir -p /mnt/boot
+    mount -o subvol=@boot,ro "${DISKS[0]}" /mnt/boot # Mount boot subvolume as read-only
+
+    # Handle existing GRUB files
+    handle_existing_grub
+
+    # Check if grub-install exists before proceeding
+    check_grub_install
+
+    # Install GRUB on all specified disks
+    for DISK in "${DISKS[@]}"; do
+        echo "Installing GRUB on $DISK"
+        grub2-install --target=x86_64-efi "$DISK"  # Use grub2 for Fedora
+    done
+fi
+
+# Load current GRUB configuration
+if [ -f /boot/grub/grub.cfg ]; then
+    CURRENT_GRUB_CFG=$(cat /boot/grub/grub.cfg)
+else
+    CURRENT_GRUB_CFG=""
+fi
+
+# Prepare new entries for GRUB configuration
+NEW_GRUB_ENTRIES=$(cat <<EOF
+set default=0
+set timeout=5
+
+menuentry "Linux" {
+    linux /vmlinuz root=/dev/sda1 rootflags=subvol=@,ro rw
+    initrd /initrd.img
+}
+
+menuentry "Reboot" {
+    reboot
+}
+
+menuentry "Shutdown" {
+    shutdown
+}
+
+menuentry "Show Checksum Test" {
+    insmod btrfs
+    echo "Running checksum verification..."
+    btrfs scrub start /mnt/@
+    btrfs scrub status /mnt/@
+}
+EOF
+)
+
+# Generate the final GRUB configuration
+echo "Generating GRUB configuration"
+{
+    if [ -n "$CURRENT_GRUB_CFG" ]; then
+        echo "$CURRENT_GRUB_CFG"
+    fi
+    echo "$NEW_GRUB_ENTRIES"
+} | tee /mnt/boot/grub/grub.cfg
+
+# Create .SECURE_RAID.lst file
+create_secure_raid_list
+
+# Checksum and change logging
+CHECKSUM_FILE="/var/log/btrfs_checksums_$(date +%Y%m%d_%H%M%S).log"
+TARGET_DIR="/mnt/@"
+
+if [[ ! -f $CHECKSUM_FILE ]]; then
+    echo "Creating initial checksum file..."
+    find "$TARGET_DIR" -type f -exec sha256sum {} \; > "$CHECKSUM_FILE"
+    echo "Initial checksums saved to $CHECKSUM_FILE."
+fi
+
+# Load existing checksums into a new variable
+OLD_CHECKSUMS=$(cat "$CHECKSUM_FILE")
+NEW_CHECKSUMS=$(find "$TARGET_DIR" -type f -exec sha256sum {} \;)
+
+# Compare and log changes
+echo "Checking for changes..."
+DIFF=$(diff <(echo "$OLD_CHECKSUMS") <(echo "$NEW_CHECKSUMS"))
+
+if [[ -n "$DIFF" ]]; then
+    echo "Changes detected:"
+    echo "$DIFF"
+    
+    CHANGE_LOG="/var/log/btrfs_changes_$(date +%Y%m%d_%H%M%S).log"
+    echo "$(date): Changes detected:" >> "$CHANGE_LOG"
+    echo "$DIFF" >> "$CHANGE_LOG"
+else
+    echo "No changes found."
+fi
+
+echo "$NEW_CHECKSUMS" > "$CHECKSUM_FILE"
+
+if [ "$UPDATE_BOOT" = true ]; then
+    echo "Updating snapshots and remounting the subvolumes as rw"
+    umount /mnt
+    mount -o remount,rw "${DISKS[0]}" /mnt
+    btrfs subvolume snapshot /mnt/@ /mnt/@/.snapshots/root_updated_$(date +%Y%m%d_%H%M%S)
+    echo "Snapshots have been updated."
+fi
+
+if [ $? -eq 0 ]; then
+    echo "GRUB successfully installed on ${DISKS[*]}, snapshots created, and boot subvolume established."
+else
+    echo "Error during GRUB installation."
+    exit 1
+fi
+#!/bin/bash
+
+# Script Name: install_grub2-raid.sh
 # Version: v1.3-BETA
 # Author: [NAZY-OS]
 # License: GPL-2.0
