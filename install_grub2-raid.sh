@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Script Name: install_grub2-raid.sh
-# Version: 1.3-ALPHA
+# Version: 1.4-ALPHA
 # Author: [NAZY-OS]
 # License: GPL-2.0
 
@@ -46,9 +46,9 @@ if [ "$LOCK" = true ]; then
     exit 0
 fi
 
-# Format the Btrfs file system with RAID 1
-echo "Formatting the Btrfs file system in RAID 1"
-sudo mkfs.btrfs -d raid1 -m raid1 "${DISKS[@]}"
+# Format the Btrfs file system with RAID 1, SHA256 checksums, and label
+echo "Formatting the Btrfs file system in RAID 1 with SHA256 checksums and label 'SecureGrubRaid1'"
+sudo mkfs.btrfs -d raid1 -m raid1 --label "SecureGrubRaid1" --checksum sha256 "${DISKS[@]}"
 
 # Mount the Btrfs file system
 echo "Mounting the Btrfs file system"
@@ -68,10 +68,10 @@ sudo btrfs subvolume create /mnt/@          # Root subvolume
 sudo btrfs subvolume create /mnt/@boot      # Boot subvolume
 sudo umount /mnt
 
-# Mount the subvolumes
-sudo mount -o subvol=@,ro "${DISKS[0]}" /mnt       # Mount root subvolume as read-only
+# Mount the subvolumes with read-only option
+sudo mount -o subvol=@,ro "${DISKS[0]}" /mnt        # Mount root subvolume as read-only
 sudo mkdir -p /mnt/boot
-sudo mount -o subvol=@boot,ro "${DISKS[0]}" /mnt/boot  # Mount boot subvolume as read-only
+sudo mount -o subvol=@boot,ro "${DISKS[0]}" /mnt/boot # Mount boot subvolume as read-only
 
 # Install GRUB on all specified disks
 for DISK in "${DISKS[@]}"; do
@@ -125,5 +125,4 @@ else
     echo "Error during GRUB installation."
     exit 1
 fi
-
 
