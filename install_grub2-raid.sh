@@ -1,48 +1,97 @@
 #!/bin/bash
 
 # Script Name: install_grub2-raid.sh
-# Version: 1.4-ALPHA
+# Version: v1.5-ALPHA
 # Author: [NAZY-OS]
 # License: GPL-2.0
 
-
 # Function to show help
 show_help() {
-    echo "Usage: $0 <disk1> <disk2> [<disk3> ... <diskN>] [--update-boot | -u] [--lock | --unlock]"
-    echo "Example: $0 /dev/sda /dev/sdb"
-    echo "         $0 /dev/sda /dev/sdb --update-boot or -u"
-    echo "         $0 /dev/sda /dev/sdb --lock"
-    echo "         $0 /dev/sda /dev/sdb --unlock"
-    echo "The script installs GRUB and creates Btrfs snapshots."
+    cat << EOF
+Usage: $0 [OPTIONS] <disk1> <disk2> [<disk3> ... <diskN>]
+
+Options:
+  -h, --help                Show this help message and exit
+  -u, --update-boot         Update boot and remount subvolumes as read-write
+  -l, --lock                Lock the script to prevent modifications
+  -u, --unlock              Unlock the script to allow modifications
+  -c, --checksum-test       Perform a checksum and file change test
+
+Examples:
+  $0 /dev/sda /dev/sdb
+  $0 /dev/sda /dev/sda --update-boot
+  $0 /dev/sda /dev/sda --lock
+  $0 /dev/sda /dev/sda --unlock
+  $0 --checksum-test
+EOF
 }
 
 # Check the number of parameters
-if [ "$#" -lt 2 ]; then
+if [ "$#" -lt 2 ] && [[ "$1" != "--checksum-test" && "$1" != "-c" ]]; then
     show_help
     exit 1
 fi
 
-DISKS=("${@:1:$#-2}")  # Grab all disks except the last two parameters
+DISKS=()
 UPDATE_BOOT=false
 LOCK=false
+CHECKSUM_TEST=false
 
-# Check for update and lock/unlock parameters
-for (( i=${#DISKS[@]}; i<=$#; i++ )); do
-    case "${!i}" in
+# Check for parameters
+while (( "$#" )); do
+    case "$1" in
         --update-boot|-u)
             UPDATE_BOOT=true
+            shift
             ;;
-        --lock)
+        --lock|-l)
             LOCK=true
+            shift
             ;;
-        --unlock)
+        --unlock|-u)
             LOCK=false
+            shift
+            ;;
+        --checksum-test|-c)
+            CHECKSUM_TEST=true
+            shift
+            ;;
+        *)
+            DISKS+=("$1")
+            shift
             ;;
     esac
 done
 
+# If script is locked, exit with a message
 if [ "$LOCK" = true ]; then
     echo "The script is in lock mode. No modifications will be made."
+    exit 0
+fi
+
+# If checksum test is triggered
+if [ "$CHECKSUM_TEST" = true ]; then
+    # Perform checksum test
+    CHECKSUM_FILE="/var/log/btrfs_checksums.log"
+    TARGET_DIR="/mnt/@"
+
+    if [[ ! -f $CHECKSUM_FILE ]]; then
+        echo "Checksum file not found. Please run the script without the checksum test option to create it first."
+        exit 1
+    fi
+
+    OLD_CHECKSUMS=$(cat "$CHECKSUM_FILE")
+    NEW_CHECKSUMS=$(find "$TARGET_DIR" -type f -exec sha256sum {} \;)
+
+    echo "Checking for changes..."
+    DIFF=$(diff <(echo "$OLD_CHECKSUMS") <(echo "$NEW_CHECKSUMS"))
+
+    if [[ -n "$DIFF" ]]; then
+        echo "Changes detected:"
+        echo "$DIFF"
+    else
+        echo "No changes found."
+    fi
     exit 0
 fi
 
@@ -89,21 +138,62 @@ menuentry "Linux" {
     linux /vmlinuz root=/dev/sda1 rootflags=subvol=@,ro rw
     initrd /initrd.img
 }
+
+menuentry "Reboot" {
+    reboot
+}
+
+menuentry "Shutdown" {
+    shutdown
+}
+
+menuentry "Show Checksum Test" {
+    insmod btrfs
+    echo "Running checksum verification..."
+    btrfs scrub start /mnt/@
+    btrfs scrub status /mnt/@
+}
 EOF
 
 # Generate the final GRUB configuration
 echo "Generating GRUB configuration"
 sudo grub-mkconfig -o /mnt/boot/grub/grub.cfg
 
-# Create snapshots of the root subvolume
-echo "Creating snapshots of the root subvolume"
-sudo btrfs subvolume snapshot /mnt/@ /mnt/@/.snapshots/root_$(date +%Y%m%d_%H%M%S)
+# Checksum and change logging
+CHECKSUM_FILE="/var/log/btrfs_checksums_$(date +%Y%m%d_%H%M%S).log"  # Adding timestamp to checksum log
+TARGET_DIR="/mnt/@"
 
-# Optionally, create a read-only version of the boot subvolume
-echo "Creating read-only version of the boot subvolume"
-sudo btrfs subvolume snapshot /mnt/@boot /mnt/@boot/.snapshots/boot_$(date +%Y%m%d_%H%M%S)
-sudo umount /mnt/boot
-sudo mount -o subvol=@boot,ro "${DISKS[0]}" /mnt/boot  # Remount in read-only mode
+# Initial checksum creation or load
+if [[ ! -f $CHECKSUM_FILE ]]; then
+    echo "Creating initial checksum file..."
+    find "$TARGET_DIR" -type f -exec sha256sum {} \; > "$CHECKSUM_FILE"
+    echo "Initial checksums saved to $CHECKSUM_FILE."
+fi
+
+# Load existing checksums into a new variable
+OLD_CHECKSUMS=$(cat "$CHECKSUM_FILE")
+
+# Calculate new checksums
+NEW_CHECKSUMS=$(find "$TARGET_DIR" -type f -exec sha256sum {} \;)
+
+# Compare and log changes
+echo "Checking for changes..."
+DIFF=$(diff <(echo "$OLD_CHECKSUMS") <(echo "$NEW_CHECKSUMS"))
+
+if [[ -n "$DIFF" ]]; then
+    echo "Changes detected:"
+    echo "$DIFF"
+    
+    # Log changes with timestamps, creating a new log file for changes
+    CHANGE_LOG="/var/log/btrfs_changes_$(date +%Y%m%d_%H%M%S).log"
+    echo "$(date): Changes detected:" >> "$CHANGE_LOG"
+    echo "$DIFF" >> "$CHANGE_LOG"
+else
+    echo "No changes found."
+fi
+
+# Update the checksum file for the next comparison
+echo "$NEW_CHECKSUMS" > "$CHECKSUM_FILE"  # This will be done in a new timestamped file next run
 
 # If the update boot flag is set
 if [ "$UPDATE_BOOT" = true ]; then
@@ -125,4 +215,3 @@ else
     echo "Error during GRUB installation."
     exit 1
 fi
-
