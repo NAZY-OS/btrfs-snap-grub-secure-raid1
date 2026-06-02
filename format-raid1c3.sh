@@ -15,9 +15,9 @@ function show_help {
 }
 
 if [ $? -eq 0 ]; then
-    echo "SUCCESSFUL RAID 10 BALANCE PROCESS COMPLETED."
+    echo "SUCCESSFUL RAID 1 BALANCE PROCESS COMPLETED."
     else
-        echo "FAILED RAID 10 BALANCE $parameters."
+        echo "FAILED RAID 1 BALANCE $parameters."
         fi
         
         
@@ -128,7 +128,7 @@ parameters_string=$(echo "$parameters" | sed 's/[[:space:]]*$//')
 # Display the collected parameters
 echo "Collected parameters: '$parameters_string'"
 
-if confirm_action "Are you sure you want to proceed?\n mkfs.btrfs --label "SecureGrubRaid10" --force -m raid10 -d raid10 $parameters_string"; then
+if confirm_action "Are you sure you want to proceed?\n mkfs.btrfs --label "SecureGrubRaid1" --force -m raid1 -d raid1 $parameters_string"; then
     echo "Executing main script logic..."
 else
     echo "Exiting the script."
@@ -138,9 +138,9 @@ fi
 mkfs.btrfs --label "SecureGrubRaid1" --force -m raid1 -d raid1 $parameters_string
 
 if [ $? -eq 0 ]; then
-    echo "SUCCESSFUL created RAID 10."
+    echo "SUCCESSFUL created RAID 1."
 else
-    echo "FAILED to format RAID 10."
+    echo "FAILED to format RAID 1."
 fi
 
 
