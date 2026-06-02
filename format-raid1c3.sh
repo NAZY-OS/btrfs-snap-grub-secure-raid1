@@ -148,5 +148,6 @@ mkdir /media/btrfs &> /dev/null
 
 mount $parameters /media/btrfs && btrfs filesystem show /media/btrfs && btrfs balance start /media/btrfs && btrfs balance status /media/btrfs
 
+echo "Mounted Raid-1c3 to:   /media/btrfs
     
     
