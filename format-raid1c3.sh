@@ -105,8 +105,12 @@ done
 
 # Loop to get user input for parameters
 parameters=""
-for i in {1..3}; do
+count="0"
+for i in {1..2}; do
     while true; do
+        ((count++))
+        echo "You have to set the $count raid device"
+        echo
         read -p "Enter parameter $i (or press 'c' to cancel): " input
         if [[ $input == "c" ]]; then
             echo "Aborting input..."
